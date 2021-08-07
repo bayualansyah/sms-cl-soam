@@ -23,7 +23,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Introduction 
 
-Sebagai langkah terakhir dalam kursus Machine Learning Specialization, setiap siswa harus menyelesaikan 1 kasus sebagai machine learning capstone project ini. Dalam artikel ini, saya akan menjelaskan satu kasus machine learning capstone project mengenai : **"Spam SMS Classification"**.
+**"Spam SMS Classification"**.
 
 Layanan Pesan Singkat (SMS) digunakan untuk mengirim pesan teks singkat dari satu perangkat seluler ke perangkat seluler lainnya. Layanan ini adalah jenis komunikasi yang sangat populer di antara orang-orang. Namun, tidak semua pesan SMS yang diterima dan inginkan merupakan pesan yang benar, karena terkadang terdapat pesan yang tidak diinginkan yang disebut dengan istilah `spam`.
 
@@ -613,4 +613,4 @@ Untuk mengklasifikasikan apakah SMS adalah spam atau ham. Digunakan Naive Bayes 
 # Result
 
 ```{r, out.width = "100%", echo = FALSE, fig.align = "center"}
-knitr::include_graphics("Algoritma Capstone ML.png")
+knitr::include_graphics("----.png")

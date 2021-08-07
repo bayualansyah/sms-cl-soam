@@ -1,0 +1,616 @@
+---
+title: "CAPSTONE ML - SMS Spam Classification"
+author: "Bayu Alansyah"
+date: "7 Juli 2021"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: 
+        collapsed: false
+    number_sections: true
+    theme: flatly
+    highlight: zenburn
+  fig_caption: yes
+  pdf_document:
+    latex_engine: xelatex
+    fig_caption: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction 
+
+Sebagai langkah terakhir dalam kursus Machine Learning Specialization, setiap siswa harus menyelesaikan 1 kasus sebagai machine learning capstone project ini. Dalam artikel ini, saya akan menjelaskan satu kasus machine learning capstone project mengenai : **"Spam SMS Classification"**.
+
+Layanan Pesan Singkat (SMS) digunakan untuk mengirim pesan teks singkat dari satu perangkat seluler ke perangkat seluler lainnya. Layanan ini adalah jenis komunikasi yang sangat populer di antara orang-orang. Namun, tidak semua pesan SMS yang diterima dan inginkan merupakan pesan yang benar, karena terkadang terdapat pesan yang tidak diinginkan yang disebut dengan istilah `spam`.
+
+Dalam Rpubs ini, kita akan melihat pengklasifikasian SMS menggunakan model machine learning Naive Bayes dan model Random Forest.
+
+# Load Library 
+
+Import beberapa library yang dibutuhkan. Adapun beberapa library yang akan digunakan untuk text mining adalah `dplyr`,`lubridate`,`tm`,`stopwords`,`tidyr`.
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(lubridate)
+library(tm)
+library(stopwords)
+library(e1071)
+library(caret)
+library(lime)
+library(ggplot2)
+library(tidyr)
+library(tibble)
+```
+
+# Import Data
+
+Baca dan lihat data yang kita punya untuk dapat diolah :
+
+```{r}
+sms <- read.csv("data-input/data-train.csv", stringsAsFactors = F)
+glimpse(sms)
+```
+
+Data terdiri dari 2004 baris (rows) dan jumlah columns sebanyak 3 columns :
+
+- `datetime` : Menampilkan kapan SMS dikirim
+- `text` : Isi dari SMS
+- `status` : Apakah SMS **Spam** atau **Ham**
+
+
+
+
+Beberapa langkah yang akan dilakukan dalam preprocessing data, diantaranya :
+
+- Mengubah teks menjadi corpus 
+- Membersihkan teks dari tanda baca, spasi, stopword, number 
+- Convert to document-term matrix
+
+
+Sebelum melompat lebih jauh, mari kita lakukan Data Wrangling dan EDA terlebih dahulu.
+
+# Data Wrangling
+
+Dalam Data Wrangling akan mengubah tipe data `datetime` menjadi date, `status` menjadi `factor`. (untuk columns text tidak perlu dirubah karena sudah tepat bertipe data character). 
+
+```{r}
+sms <- sms %>% 
+   mutate(
+      status=as.factor(status),
+      datetime=ymd_hms(datetime)
+   )
+```
+
+# Exploratory Data Analytics (EDA) {.tabset}
+
+Untuk dapat melihat pada jam berapa `spam` dan `ham` SMS paling banyak dikirim dalam sehari. Kita dapat melihatnya dalam visualisasi, untuk visualisasinya kita dapat menggunakan plot Bar.
+
+Sebelumnya lakukan terlebih dahulu preprocesess data untuk visualisasi dengan mengelompokkan data berdasarkan jam dan jumlah total `spam`, `ham`. Dan kemudian plot menggunakan **geom_bar** pada **ggplot*.
+
+```{r warning=FALSE, message=FALSE}
+sms %>% 
+   mutate(hour = hour(datetime)) %>% 
+   group_by(hour) %>% 
+   summarise(
+      spam = sum(ifelse(status == "spam", 1, 0)),
+      ham = sum(ifelse(status == "spam", 0, 1)),
+   ) %>% 
+   ungroup() %>% 
+   pivot_longer(cols = c(ham, spam)
+                ) %>% 
+  ggplot(
+      aes(
+         x=hour,
+         y=value,
+         fill=name
+         )
+      ) +
+  geom_col(
+    stat="identity"
+    ) +
+  scale_fill_manual(values=c("#4bdb57", "#f7a41e"))
+```
+
+Selain dapat melihat pada jam berapa `spam` dan `ham` SMS paling banyak dikirim dalam sehari. Kita pun dapat melihat pola text `spam` atau `ham` dengan menggunakan library **wordcloud**. Mari kita lihat pola teks `spam` pada data yang kita miliki
+
+```{r message=FALSE, warning=FALSE}
+library(wordcloud)
+# your code here
+sms %>% 
+  filter(status == "spam") %>%
+  head(10) %>% 
+  pull(text)
+```
+```{r message=FALSE, warning=FALSE}
+sms %>% 
+  filter(status == "spam") %>% 
+  pull(text) %>% 
+  wordcloud(max.words = 250, 
+            scale = c(2, 0.4),
+            random.order = FALSE,
+            colors = brewer.pal(7, "Accent")) 
+```
+
+Dari pola teks yang terbentuk diatas Kata yang berpotensial mengindikasi bahwa suatu text adalah spam yaitu: kuota, pulsa, paket, sms, internetan, info, atau, data, promo, diskon, gratis, bonus..
+
+## Data Characteristic
+
+Filter data Untuk melihat characteristic dari kedua kategori, yaitu spam dan ham.
+
+### Spam
+
+```{r}
+sms %>%
+   filter(status == "spam") %>% 
+   tail()
+```
+> Dari apa yang terlihat di atas, teks yang berhubungan dengan spam biasanya bersifat promosi. Dan beberapa kata/token seperti “gratis”, “bonus”.
+
+### Ham
+
+```{r}
+sms %>% 
+   filter(status == "ham") %>% 
+   tail()
+```
+> Teks yang ham biasanya terkait dengan nomor verifikasi atau informasi provider atau percakapan biasa. Beberapa kata yang digunakan adalah “kode”, “dimana”.
+
+# Data Preparation {.tabset}
+
+Karena teks dalam data adalah teks SMS yang bersifat mentah atau murni. kita harus membersihkannya terlebih dahulu sehingga model yang kita buat nantinya dapat menggunakan teks tersebut untuk proses training.
+
+Ada beberapa tahapan yang harus kita lalui.
+
+## Convert to Corpus
+
+Langkah pertama adalah mengubah teks menjadi corpus.
+> Corpus adalah kumpulan dokumen
+
+```{r}
+sms.corpus <- sms %>% 
+   # Convert to corpus
+   VectorSource() %>% 
+   VCorpus()
+```
+
+## Text Cleaning
+
+Setelah itu, sekarang kita dapat membersihkan teks tersebut. Beberapa hal yang perlu kita lakukan adalah sebagai berikut :
+
+- Mengubah teks menjadi huruf kecil
+
+- Menghapus nomor (remove numbers)
+
+- Hapus kata-kata stopwords (Karena dalam dataset menggunakan bahasa indonesia. Kita perlu menghapus stopwords khusus untuk bahasa Indonesia).
+
+- Hapus tanda baca (remove punctuation)
+
+- Stem Document (Mengubah kata menjadi kata basic)
+
+- Strip whitespace menghapus extra white space
+
+```{r}
+sms.corpus <- sms.corpus %>%
+   tm_map(content_transformer(tolower)) %>% 
+   tm_map(removeNumbers) %>% 
+   tm_map(removeWords, stopwords("id", source="stopwords-iso")) %>% 
+   tm_map(removePunctuation) %>%
+   tm_map(function(x) { stemDocument(x, language="indonesian") }) %>%
+   tm_map(stripWhitespace)
+```
+
+## Convert to Document Term Matrix
+
+Setelah teks bersih. Pertanyaan selanjutnya adalah bagaimana kita bisa membuat model jika prediktornya masih berupa teks.
+
+Dalam text mining, teks biasanya berubah menjadi Document-Term Matrix (DTM) dengan proses tokenization. Tokenisasi dapat membagi satu kalimat menjadi beberapa istilah. Term dapat berupa satu kata, dua kata atau lebih. Dalam DTM, satu kata sama dengan 1 prediktor, dengan nilai seberapa sering kata tersebut muncul dalam satu dokumen atau sms.
+
+
+```{r}
+sms.dtm <- sms.corpus %>% 
+   DocumentTermMatrix()
+
+sms.dtm
+```
+
+**Dapatkan hanya istilah yang paling sering ? **
+
+Dari hanya mendapatkan term paling sering dengan minimal muncul dalam 20 sms, kita bisa mendapatkan kandidat prediktor paling berpengaruh.
+
+```{r}
+sms.freq <- findFreqTerms(sms.dtm, lowfreq = 20)
+
+sms.dtm <- sms.dtm[,sms.freq]
+```
+
+Dengan memfilter prediktor yang paling berpengaruh, kita dapat mengurangi waktu untuk melatih model.
+
+## Convert to Bernoulli
+
+Dalam referensi istilah dokumen, nilai matriks adalah rentang frekuensi dari 0 hingga Tak Terbatas. Untuk menghitung probabilitas, frekuensi perlu disederhanakan menjadi 0 dan 1 atau tidak muncul dan muncul.
+
+Untuk melakukan itu kita perlu membangun custom function bernama Bernoulli Converter.
+
+Logika di baliknya sangat sederhana 
+
+- Jika frekuensi kata lebih dari 1 maka menghasilkan 1 
+
+- Jika frekuensi kata adalah 0 maka kembalikan 0
+
+```{r}
+bernoulli_conv <- function(x) {
+  x <- as.factor(ifelse(x > 0, 1, 0))
+  return(x)
+}
+
+bernoulli_conv(c(0,1,3))
+```
+
+Seperti yang kita lihat, custom function berfungsi, sekarang mari kita terapkan ke dataset yang kita miliki.
+
+```{r}
+sms.dtm <- sms.dtm %>% 
+   apply(MARGIN = 2, FUN = bernoulli_conv)
+
+sms.dtm[1:3, 1:20]
+```
+
+Dataset sekarang sudah bersih dan berdasarkan Term Frequency (TF) - Inverse Document Frequency (IDF)
+
+## Create a Function
+
+Untuk persiapan data yang baru saja dilakukan, kita dapat merangkum semua itu ke dalam sebuah fungsi.
+
+```{r}
+tokenize_text <- function(x, is_bernoulli = TRUE) {
+   data_dtm <- x %>% 
+      # Convert to corpus
+      VectorSource() %>% 
+      VCorpus() %>% 
+      
+      # text cleaning
+      tm_map(content_transformer(tolower)) %>% 
+      tm_map(removeNumbers) %>% 
+      tm_map(removeWords, stopwords("id", source="stopwords-iso")) %>% 
+      tm_map(removePunctuation) %>%
+      tm_map(stemDocument) %>%
+      tm_map(stripWhitespace) %>% 
+
+      # Convert DTM
+      DocumentTermMatrix()
+   
+   data_freq <- findFreqTerms(data_dtm, lowfreq = 20)
+
+   if (is_bernoulli) {
+      data_dtm[,data_freq] %>% 
+         apply(MARGIN = 2, FUN = bernoulli_conv) %>% 
+         return()
+   } else {
+      data_dtm[,data_freq] %>% 
+         return()
+   }
+}
+```
+
+# Cross Validation
+
+Setelah membersihkan data, sekarang mari kita pisahkan data untuk dilatih dan diuji. Untuk kasus ini kita akan membagi menjadi 75% data train dan 25% data test.
+
+```{r warning=FALSE, message=FALSE}
+RNGkind(sample.kind = "Rounding")
+```
+
+```{r}
+set.seed(100)
+
+index <- sample(nrow(sms), nrow(sms)*0.75)
+
+sms_clean <- tokenize_text(sms$text)
+
+data_train_clean <- sms_clean[index,]
+data_test_clean <- sms_clean[-index,]
+
+label_train <- sms[index, "status"]
+label_test <- sms[-index, "status"]
+```
+
+```{r}
+data_train <- sms[index,]
+data_test <- sms[-index,]
+```
+
+# Model{.tabset }
+
+Untuk model, kita akan membuat dua model yang berbeda sebagai perbandingan. Naive Bayes dan Random Forest.
+
+## Naive Bayes
+
+Membuat model naive bayes.
+
+```{r}
+model_nb <- naiveBayes(
+   x = data_train_clean, 
+   y = label_train,
+   laplace = 1
+)
+```
+
+## Random Forest
+
+Sebagai perbandingan, kita membuat model random forest.
+
+>**Peringatan!**
+>Dalam membuat model random forest dapat memakan waktu yang cukup lama, beberapa menit atau bahkan berjam-jam. Jadi sangat membantu apabila menyimpan model setelah model dibuat.
+
+```{r}
+# set.seed(417)
+# 
+# ctrl <- trainControl(method="repeatedcv", number = 5, repeats = 3)
+# 
+# model_forest <- train(
+#    x = data_train_clean,
+#    y = label_train,
+#    method = "rf",
+#    trControl = ctrl
+# )
+# 
+# saveRDS(model_forest, "spam_Rforest.RDS") # save model
+```
+
+Memuat model random forest
+
+```{r}
+model_forest <- readRDS("spam_Rforest.RDS")
+```
+
+# Evaluate Model {.tabset}
+
+Setelah membuat model, mari lakukan evaluasi pada model yang telah dibuat
+
+## Prediction
+
+Tetapi, kita perlu membuat prediksi agar dapat dievaluasi dengan data test
+
+### Naive Bayes
+
+```{r}
+sms_pred_naive <- predict(model_nb, newdata = data_test_clean, type="class")
+head(sms_pred_naive)
+```
+
+### Random Forest
+
+```{r}
+sms_pred_rf <- predict(model_forest, newdata = data_test_clean, type="raw")
+head(sms_pred_rf)
+```
+
+## Confusion Matrix
+
+Untuk mengevaluasi model mari kita membuat Confusion Matrix.
+
+Untuk kasus klasifikasi SMS ini. Akan digunakan Accuracy untuk mengukur kinerja model karena menentukan nilai positif atau Spam sama pentingnya dengan menentukan nilai negatif atau Ham, karena kebanyakan orang tidak ingin melewatkan SMS penting, tetapi juga ingin menyingkirkan SMS spam.
+
+### Naive Bayes
+
+```{r}
+confusionMatrix(data = sms_pred_naive, reference = label_test, positive = "spam")
+```
+
+Dari Confusion Matrix untuk prediksi naive bayes. Didapatkan 91% Accuracy. Hal ini menunjukkan bahwa model naive bayes cukup akurat.
+
+### Random Forest
+
+```{r}
+confusionMatrix(data = sms_pred_rf, reference = label_test, positive = "spam")
+```
+
+Padahal model sebelumnya sudah cukup akurat dalam memprediksi data test. Model random forest ini lebih akurat daripada naive bayes dan mendapatkan 96% Accuracy untuk data test.
+
+## False Prediction
+
+Mari kita lihat prediksi model mana yang salah. Untuk hasil prediksi random forest ini akan digunakan karena lebih robust dibandingkan naive bayes.
+
+```{r}
+pred.false <- data_test %>% 
+   mutate(
+      pred.rf = sms_pred_rf,
+   ) %>% 
+   filter(pred.rf != status)
+pred.false %>% select(-datetime) %>% filter(pred.rf == "spam")
+```
+
+Terlihat di atas banyak teks ham yang salah klasifikasi adalah sms dari provider internet yang menginformasikan penggunanya tentang sesuatu yang berguna seperti sisa data. Hal ini mungkin terjadi karena provider internet sering mengirimkan barang-barang promosi yang berisi kata-kata seperti “pulsa” atau “kuota” atau “paket” yang juga digunakan untuk menginformasikan kepada pengguna tentang sisa data atau sesuatu yang berguna bagi pengguna.
+
+# Interpreting Model {.tabset}
+
+Ada dua metode yang akan digunakan untuk menginterpretasikan model ini. Variabel Pentingnya untuk random forest dan LIME untuk Naive Bayes.
+
+## Variable Importance
+
+Variable Importance membantu kita mengetahui variabel mana yang berkontribusi lebih banyak dan variabel mana yang tidak berkontribusi apa pun.
+
+Mari kita lihat kata mana yang paling penting, dengan menggunakan Variable Importance dari model `Random forest` yang dibuat.
+
+```{r}
+caret::varImp(model_forest, 20)$importance %>% 
+   as.data.frame() %>%
+   rownames_to_column() %>%
+   arrange(-Overall) %>%
+   mutate(rowname = forcats::fct_inorder(rowname))
+```
+
+Kontributor paling banyak dalam model adalah `info` dan kontributor paling sedikit adalah `memberitahukan`.
+
+## LIME
+
+LIME atau kependekan dari Local Interpretable Model-agnostic Explanations adalah teknik penjelasan baru yang menjelaskan prediksi pengklasifikasi apa pun dengan cara yang dapat ditafsirkan dan dipercaya dengan mempelajari model yang dapat ditafsirkan secara lokal di sekitar prediksi.
+
+LIME dapat memprediksi model apa saja dan memperlakukannya sebagai black box model. Sedangkan Decision Tree atau Variable Importance dalam Random Forest hanya berlaku pada model tersebut.
+
+LIME akan digunakan untuk menginterpretasikan model naive bayes.
+
+Karena lime tidak mendukung naiveBayes, kita perlu membuat custom function untuk naive bayes bernama `model_type.naiveBayes`.
+
+```{r}
+model_type.naiveBayes <- function(x){
+  return("classification")
+}
+```
+
+Selain itu dibutuhkan juga fungsi untuk menyimpan prediksi. Fungsinya adalah `predict_model.naiveBayes`.
+
+```{r}
+predict_model.naiveBayes <- function(x, newdata, type = "raw") {
+    res <- predict(x, newdata, type = "raw") %>% as.data.frame()
+    return(res)
+}
+```
+
+Sekarang, kita perlu menyiapkan input untuk LIME. Dalam masalah klasifikasi umum, inputnya dapat berupa tabel yang berisi fitur-fitur. Namun, dalam klasifikasi teks, input harus berupa teks asli dan kita juga perlu memberikan langkah preprocessing untuk memproses teks dari pembersihan hingga tokenisasi. Pastikan input teks adalah karakter, bukan faktor.
+
+```{r}
+text_train <- data_train$text %>% as.character()
+text_test <- data_test$text
+
+explainer <- lime(
+   text_train,
+   model=model_nb,
+   preprocess=tokenize_text
+)
+```
+
+Sekarang kita akan mencoba menjelaskan bagaimana model kita bekerja pada dataset testing. Amati interpretasi pengamatan ke-2 hingga ke-5 dari data test. Jangan lupa untuk melakukan set.seed untuk mendapatkan contoh yang dapat direproduksi.
+
+Akan menggunakan 5 features untuk ini
+
+```{r}
+set.seed(123)
+explanation <- explain(
+   text_test[1:5],
+   explainer = explainer, 
+   n_labels = 1, 
+   n_features = 5, 
+   feature_select = "none",
+   single_explanation = F
+)
+```
+
+Visualisasi hasilnya
+
+```{r}
+plot_text_explanations(explanation)
+```
+Kita dapat melihat bahwa dari ketiga pengamatan, kemungkinan menjadi ham adalah 98%. Kesesuaian penjelasan menunjukkan seberapa baik LIME dalam menginterpretasikan prediksi untuk pengamatan ini, yaitu 76% sehingga cukup akurat.
+
+Teks berlabel biru berarti kata mendukung/meningkatkan kemungkinan menjadi **SPAM**, dengan pengaruh paling besar kata `promo` dan `belaku`.
+
+Teks berlabel merah berarti bahwa kata tersebut bertentangan/mengurangi kemungkinan peninjauan menjadi **HAM**, seperti `Anda`, `hari` atau `nasi`.
+
+> Perbedaan antara LIME dan menggunakan model machine learning yang dapat diinterpretasikan seperti Decision Tree adalah LIME dapat diterapkan dalam model apa pun tetapi menjelaskan peran fitur berdasarkan prediksi model dalam data sampel. Sedangkan model pembelajaran mesin interpretable hanya dapat diterapkan pada modelnya seperti Variable Importance in Random forest tetapi dapat menjelaskan apa kontribusi fitur dalam model itu sendiri.
+
+# Submission Data {.tabset}
+
+Sekarang mari kita terapkan model kita ke Submission Data. Untuk ini kita akan menggunakan Random Forest karena lebih kuat dan akurat daripada Naive Bayes.
+
+## Import Data
+
+Import Submission Data
+
+```{r}
+submission <- read.csv("data-input/data-test.csv")
+```
+
+## Text Cleaning
+
+Karena kita sudah membuat function tadi bernama `tokenize_text`.
+
+```{r}
+submission.clean <- tokenize_text(submission$text)
+submission.clean[1:5,1:10]
+```
+
+## Optimize data
+
+Karena Random Forest perlu memiliki prediktor yang sama. Kita perlu memangkas prediktor kita sehingga memiliki prediktor yang sama dengan data train. Mari kita buat function untuk itu dan beri nama `trimRfPredictor`.
+
+```{r}
+trimRfPredictor <- function(x, train_data) {
+   x %>%
+      as.data.frame() %>% 
+      fncols(colnames(train_data)) %>% 
+      select(colnames(train_data)) %>% 
+      mutate_all(as.factor) %>% 
+      as.matrix.data.frame() %>% 
+      return()
+}
+```
+
+Selain itu, kita perlu membuat custom function untuk menambahkan kolom agar sesuai dengan prediktor data training. Kita bisa menamakannya `fncols`.
+
+```{r}
+fncols <- function(data, cname) {
+  add <-cname[!cname%in%names(data)]
+
+  if(length(add)!=0) data[add] <- as.factor("0")
+  data
+}
+```
+
+```{r}
+submission.clean.df <- trimRfPredictor(submission.clean, data_train_clean)
+submission.clean.df[1:5,1:20]
+```
+
+## Predict Submission
+
+Setelah membersihkan data. Mari kita memprediksi data dan menyimpannya.
+
+### Naive Bayes
+
+```{r}
+submission.nb <- submission %>% 
+   select(datetime)
+submission.nb$status <- predict(model_nb, newdata = submission.clean.df, type="class")
+
+head(submission.nb)
+```
+
+```{r}
+nrow(submission.nb)
+```
+
+```{r}
+write.csv(submission.nb, "data-input/submission_nb_bayu.csv")
+```
+
+### Random Forest
+
+```{r}
+submission.rf <- submission %>% 
+   select(datetime)
+submission.rf$status <- predict(model_forest, newdata = submission.clean.df, type="raw")
+
+head(submission.rf)
+```
+
+```{r}
+nrow(submission.rf)
+```
+
+```{r}
+write.csv(submission.rf, "data-input/submission_rf_bayu.csv")
+```
+
+# Conclusion
+
+Untuk mengklasifikasikan apakah SMS adalah spam atau ham. Digunakan Naive Bayes dan Random Forest. Karena Random Forest lebih akurat daripada Naive Bayes. Jadi digunakanlah Random Forest untuk memprediksi test submission data dan mendapatkan Accuracy dan Sensitivity >80%, serta Spesificity dan Precision >90%. Ini membuktikan bahwa masalah tersebut dapat diselesaikan menggunakan Machine Learning.
+
+# Result
+
+```{r, out.width = "100%", echo = FALSE, fig.align = "center"}
+knitr::include_graphics("Algoritma Capstone ML.png")
